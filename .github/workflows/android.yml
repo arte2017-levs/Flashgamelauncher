@@ -1,0 +1,117 @@
+name: Build FlashGameLauncher APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Descargar repositorio
+      - name: Descargar proyecto
+        uses: actions/checkout@v4
+
+      # Java 17
+      - name: Instalar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Android SDK
+      - name: Preparar Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Instalar componentes Android
+        run: |
+          sdkmanager "platform-tools" \
+                     "platforms;android-35" \
+                     "build-tools;35.0.0"
+
+      # Gradle
+      - name: Preparar Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      # Encontrar el proyecto
+      - name: Localizar proyecto Android
+        shell: bash
+        run: |
+          set -e
+
+          PROJECT_DIR=""
+
+          # Caso 1: el proyecto está directamente en el repositorio.
+          if [ -f "settings.gradle.kts" ] && \
+             [ -f "app/build.gradle.kts" ]; then
+            PROJECT_DIR="$GITHUB_WORKSPACE"
+          fi
+
+          # Caso 2: el proyecto está dentro de un ZIP.
+          if [ -z "$PROJECT_DIR" ]; then
+            mkdir -p "$RUNNER_TEMP/project"
+
+            while IFS= read -r ZIP_FILE; do
+              echo "Revisando: $ZIP_FILE"
+
+              TEMP_DIR="$RUNNER_TEMP/project/$(basename "$ZIP_FILE" .zip)"
+              mkdir -p "$TEMP_DIR"
+
+              if unzip -oq "$ZIP_FILE" -d "$TEMP_DIR"; then
+                FOUND=$(find "$TEMP_DIR" \
+                  -type f -name "settings.gradle.kts" \
+                  -printf '%h\n' | head -n 1)
+
+                if [ -n "$FOUND" ] && \
+                   [ -f "$FOUND/app/build.gradle.kts" ]; then
+                  PROJECT_DIR="$FOUND"
+                  break
+                fi
+              fi
+            done < <(find . -type f -iname "*.zip")
+          fi
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: No se encontró un proyecto Android válido."
+            echo "Se necesita settings.gradle.kts y app/build.gradle.kts."
+            exit 1
+          fi
+
+          echo "Proyecto encontrado: $PROJECT_DIR"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      # Compilar
+      - name: Compilar APK
+        run: |
+          cd "$PROJECT_DIR"
+          gradle :app:assembleDebug --no-daemon
+
+      # Verificar APK
+      - name: Comprobar APK
+        run: |
+          APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -f "$APK" ]; then
+            echo "ERROR: No se generó la APK."
+            exit 1
+          fi
+
+          echo "APK generada correctamente."
+          ls -lh "$APK"
+
+      # Descargar APK desde Actions
+      - name: Guardar APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlashGameLauncher-APK
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
